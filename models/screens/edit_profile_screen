@@ -1,0 +1,443 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import '../models/user_model.dart';
+import '../services/api_service.dart';
+import '../services/auth_service.dart';
+import '../utils/constants.dart';
+import '../widgets/custom_text_field.dart';
+
+class EditProfileScreen extends StatefulWidget {
+  final UserModel user;
+
+  const EditProfileScreen({super.key, required this.user});
+
+  @override
+  State<EditProfileScreen> createState() => _EditProfileScreenState();
+}
+
+class _EditProfileScreenState extends State<EditProfileScreen> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController;
+  final _apiService = ApiService();
+  final _imagePicker = ImagePicker();
+
+  File? _newImageFile;
+  String? _newBase64Photo;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.user.name ?? '');
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  /// Pick an image from gallery or camera and convert to Base64
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final pickedFile = await _imagePicker.pickImage(
+        source: source,
+        maxWidth: 800,
+        maxHeight: 800,
+        imageQuality: 80,
+      );
+
+      if (pickedFile != null) {
+        final file = File(pickedFile.path);
+        final base64String = await AppConstants.fileToBase64(file, includePrefix: true);
+
+        setState(() {
+          _newImageFile = file;
+          _newBase64Photo = base64String;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Gagal memilih foto: $e'),
+          backgroundColor: AppConstants.errorColor,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _showImageSourceDialog() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Pilih Sumber Foto Profil',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppConstants.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.photo_library, color: AppConstants.primaryLight),
+                title: const Text('Pilih dari Galeri'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImage(ImageSource.gallery);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.camera_alt, color: AppConstants.primaryLight),
+                title: const Text('Ambil dari Kamera'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImage(ImageSource.camera);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvatarPreview() {
+    // 1. If newly selected image file
+    if (_newImageFile != null) {
+      return CircleAvatar(
+        radius: 54,
+        backgroundColor: AppConstants.primaryLight.withValues(alpha: 0.1),
+        backgroundImage: FileImage(_newImageFile!),
+      );
+    }
+
+    // 2. Existing profile photo
+    final photo = widget.user.profilePhoto;
+    if (photo != null && photo.isNotEmpty) {
+      if (photo.startsWith('data:image')) {
+        try {
+          final commaIndex = photo.indexOf(',');
+          final base64Content = commaIndex != -1 ? photo.substring(commaIndex + 1) : photo;
+          final Uint8List bytes = base64Decode(base64Content);
+          return CircleAvatar(
+            radius: 54,
+            backgroundColor: AppConstants.primaryLight.withValues(alpha: 0.1),
+            backgroundImage: MemoryImage(bytes),
+          );
+        } catch (_) {}
+      } else if (photo.startsWith('http://') || photo.startsWith('https://')) {
+        return CircleAvatar(
+          radius: 54,
+          backgroundColor: AppConstants.primaryLight.withValues(alpha: 0.1),
+          child: ClipOval(
+            child: Image.network(
+              photo,
+              width: 108,
+              height: 108,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => _buildFallbackAvatar(),
+            ),
+          ),
+        );
+      }
+    }
+
+    return _buildFallbackAvatar();
+  }
+
+  Widget _buildFallbackAvatar() {
+    final name = widget.user.name ?? 'User';
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'U';
+    return CircleAvatar(
+      radius: 54,
+      backgroundColor: AppConstants.primaryColor,
+      child: Text(
+        initial,
+        style: const TextStyle(
+          fontSize: 38,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+        ),
+      ),
+    );
+  }
+
+  void _handleSaveChanges() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    final token = await AuthService.getToken();
+    if (token == null || token.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sesi login telah berakhir. Silakan login kembali.'),
+          backgroundColor: AppConstants.errorColor,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final String updatedName = _nameController.text.trim();
+      bool hasUpdates = false;
+
+      // 1. Update Name if modified
+      if (updatedName != (widget.user.name ?? '').trim()) {
+        final responseName = await _apiService.updateProfile(
+          token,
+          name: updatedName,
+        );
+        if (responseName.statusCode == 200 || responseName.statusCode == 201) {
+          hasUpdates = true;
+        }
+      }
+
+      // 2. Update Profile Photo if new image selected
+      if (_newBase64Photo != null && _newBase64Photo!.isNotEmpty) {
+        final responsePhoto = await _apiService.updateProfilePhoto(
+          token,
+          base64Photo: _newBase64Photo!,
+        );
+        if (responsePhoto.statusCode == 200 || responsePhoto.statusCode == 201) {
+          hasUpdates = true;
+        }
+      }
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            hasUpdates
+                ? 'Profil berhasil diperbarui!'
+                : 'Tidak ada perubahan profil yang disimpan.',
+          ),
+          backgroundColor: AppConstants.successColor,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      // Return true to HomeScreen to trigger FutureBuilder refresh
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      final errorMessage = _apiService.handleError(e);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: AppConstants.errorColor,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppConstants.backgroundColor,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new, color: AppConstants.textPrimary, size: 20),
+          onPressed: _isLoading ? null : () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'Edit Profil',
+          style: TextStyle(
+            color: AppConstants.textPrimary,
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+          ),
+        ),
+        centerTitle: true,
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Avatar with Camera Overlay
+                Center(
+                  child: Stack(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: AppConstants.primaryLight.withValues(alpha: 0.3),
+                            width: 3,
+                          ),
+                        ),
+                        child: _buildAvatarPreview(),
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: InkWell(
+                          onTap: _isLoading ? null : _showImageSourceDialog,
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: const BoxDecoration(
+                              color: AppConstants.primaryColor,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.camera_alt,
+                              size: 18,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Center(
+                  child: TextButton.icon(
+                    onPressed: _isLoading ? null : _showImageSourceDialog,
+                    icon: const Icon(Icons.photo_camera, size: 16, color: AppConstants.primaryLight),
+                    label: const Text(
+                      'Ubah Foto Profil',
+                      style: TextStyle(
+                        color: AppConstants.primaryLight,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                // Name TextFormField
+                CustomTextField(
+                  controller: _nameController,
+                  label: 'Nama Lengkap',
+                  hintText: 'Masukkan nama lengkap baru',
+                  prefixIcon: Icons.person_outline,
+                  enabled: !_isLoading,
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Nama lengkap tidak boleh kosong';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Readonly Email Info Field
+                CustomTextField(
+                  label: 'Email (Tidak Dapat Diubah)',
+                  hintText: widget.user.email ?? '-',
+                  prefixIcon: Icons.email_outlined,
+                  readOnly: true,
+                  enabled: false,
+                ),
+                const SizedBox(height: 16),
+
+                // Readonly Gender Info Field
+                CustomTextField(
+                  label: 'Jenis Kelamin',
+                  hintText: widget.user.genderDisplay,
+                  prefixIcon: Icons.transgender_outlined,
+                  readOnly: true,
+                  enabled: false,
+                ),
+                const SizedBox(height: 16),
+
+                // Readonly Batch ID and Training ID
+                Row(
+                  children: [
+                    Expanded(
+                      child: CustomTextField(
+                        label: 'Batch',
+                        hintText: widget.user.batchDisplay,
+                        prefixIcon: Icons.layers_outlined,
+                        readOnly: true,
+                        enabled: false,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: CustomTextField(
+                        label: 'Pelatihan',
+                        hintText: widget.user.trainingDisplay,
+                        prefixIcon: Icons.school_outlined,
+                        readOnly: true,
+                        enabled: false,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 32),
+
+                // Save Changes Button
+                ElevatedButton(
+                  onPressed: _isLoading ? null : _handleSaveChanges,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppConstants.primaryColor,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppConstants.radiusMedium),
+                    ),
+                    elevation: 2,
+                  ),
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'Simpan Perubahan',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
