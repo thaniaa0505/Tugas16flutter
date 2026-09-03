@@ -1,0 +1,375 @@
+import 'package:flutter/material.dart';
+import '../models/user_model.dart';
+import '../services/api_service.dart';
+import '../services/auth_service.dart';
+import '../utils/constants.dart';
+import '../widgets/profile_card.dart';
+import 'edit_profile_screen.dart';
+import 'login_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final _apiService = ApiService();
+  late Future<UserModel> _profileFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _profileFuture = _fetchProfile();
+  }
+
+  /// Core API fetch using Bearer Token and Dio
+  Future<UserModel> _fetchProfile() async {
+    final token = await AuthService.getToken();
+    if (token == null || token.isEmpty) {
+      throw Exception('Sesi login telah berakhir. Silakan login kembali.');
+    }
+
+    final response = await _apiService.getProfile(token);
+    if (response.statusCode == 200) {
+      final Map<String, dynamic> data = response.data is Map<String, dynamic>
+          ? response.data as Map<String, dynamic>
+          : <String, dynamic>{};
+      return UserModel.fromJson(data);
+    } else {
+      throw Exception('Gagal memuat profil. Status code: ${response.statusCode}');
+    }
+  }
+
+  /// Refresh FutureBuilder
+  void _refreshProfile() {
+    setState(() {
+      _profileFuture = _fetchProfile();
+    });
+  }
+
+  /// Logout with confirmation dialog and pushAndRemoveUntil
+  void _handleLogout() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppConstants.radiusLarge),
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.logout, color: AppConstants.errorColor),
+            SizedBox(width: 10),
+            Text(
+              'Konfirmasi Logout',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+          ],
+        ),
+        content: const Text(
+          'Apakah Anda yakin ingin keluar dari aplikasi MobilePro Profile?',
+          style: TextStyle(fontSize: 14, color: AppConstants.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text(
+              'Batal',
+              style: TextStyle(color: AppConstants.textSecondary),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(dialogContext); // Close dialog
+              await AuthService.logout();
+
+              if (!mounted) return;
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Anda telah berhasil logout.'),
+                  backgroundColor: AppConstants.primaryColor,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+
+              // Navigate to Login and prevent back navigation
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (context) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppConstants.errorColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppConstants.radiusSmall),
+              ),
+              elevation: 0,
+            ),
+            child: const Text(
+              'Keluar',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppConstants.backgroundColor,
+      appBar: AppBar(
+        backgroundColor: AppConstants.primaryColor,
+        elevation: 0,
+        title: const Text(
+          AppConstants.appName,
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+          ),
+        ),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout_rounded, color: Colors.white),
+            tooltip: 'Logout',
+            onPressed: _handleLogout,
+          ),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          _refreshProfile();
+          await _profileFuture;
+        },
+        color: AppConstants.primaryLight,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Welcome Banner / Section Header
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [AppConstants.primaryColor, AppConstants.primaryLight],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(AppConstants.radiusLarge),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppConstants.primaryLight.withValues(alpha: 0.2),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: const Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 24,
+                      backgroundColor: Colors.white24,
+                      child: Icon(Icons.dashboard_rounded, color: Colors.white, size: 26),
+                    ),
+                    SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Dashboard Profil',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Data profil pengguna terautentikasi via API',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // FutureBuilder for Profile
+              FutureBuilder<UserModel>(
+                future: _profileFuture,
+                builder: (context, snapshot) {
+                  // State 1: ConnectionState.waiting -> Loading Spinner
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return Container(
+                      height: 380,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(AppConstants.radiusLarge),
+                        border: Border.all(color: AppConstants.borderColor),
+                      ),
+                      child: const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            CircularProgressIndicator(
+                              color: AppConstants.primaryLight,
+                              strokeWidth: 3,
+                            ),
+                            SizedBox(height: 16),
+                            Text(
+                              'Mengambil data profil dari API...',
+                              style: TextStyle(
+                                color: AppConstants.textSecondary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+
+                  // State 2: snapshot.hasError -> Error UI with Retry Button
+                  if (snapshot.hasError) {
+                    final errorMessage = _apiService.handleError(snapshot.error);
+                    final is401 = errorMessage.contains('Sesi login telah berakhir') ||
+                        errorMessage.contains('401') ||
+                        errorMessage.contains('Unauthenticated');
+
+                    return Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(AppConstants.radiusLarge),
+                        border: Border.all(color: AppConstants.errorColor.withValues(alpha: 0.3)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.04),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: AppConstants.errorColor.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.error_outline_rounded,
+                              color: AppConstants.errorColor,
+                              size: 40,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Gagal Memuat Profil',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: AppConstants.textPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            errorMessage,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: AppConstants.textSecondary,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            onPressed: is401
+                                ? () async {
+                                    await AuthService.logout();
+                                    if (!context.mounted) return;
+                                    Navigator.pushAndRemoveUntil(
+                                      context,
+                                      MaterialPageRoute(builder: (context) => const LoginScreen()),
+                                      (route) => false,
+                                    );
+                                  }
+                                : _refreshProfile,
+                            icon: Icon(
+                              is401 ? Icons.login : Icons.refresh_rounded,
+                              size: 18,
+                              color: Colors.white,
+                            ),
+                            label: Text(
+                              is401 ? 'Login Ulang' : 'Coba Lagi',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppConstants.primaryColor,
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(AppConstants.radiusMedium),
+                              ),
+                              elevation: 0,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  // State 3: snapshot.hasData -> Display ProfileCard
+                  if (snapshot.hasData && snapshot.data != null) {
+                    final user = snapshot.data!;
+                    return ProfileCard(
+                      user: user,
+                      onEditPressed: () async {
+                        // Navigate to EditProfileScreen and await result
+                        final result = await Navigator.push<bool>(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => EditProfileScreen(user: user),
+                          ),
+                        );
+
+                        // If profile was updated, refresh the FutureBuilder
+                        if (result == true) {
+                          _refreshProfile();
+                        }
+                      },
+                    );
+                  }
+
+                  // Fallback Empty State
+                  return const Center(
+                    child: Text('Tidak ada data profil yang tersedia.'),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
